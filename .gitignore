@@ -1,0 +1,31 @@
+# ── Python ─────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# ── Virtual env (machine-specific, never push) ─────────
+.venv/
+venv/
+env/
+
+# ── Editors & OS junk ──────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Build output (if ever packaged, e.g. PyInstaller) ──
+build/
+dist/
+
+# ── Local-only: private notes, sample tracks, exports ──
+AGENTS.md
+examples/
+edlFiles/
