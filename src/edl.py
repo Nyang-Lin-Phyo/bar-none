@@ -34,6 +34,7 @@ BAR_COLOR = "ResolveColorRed"
 MODE_ALL = "all"
 MODE_DOWNBEATS = "downbeats"
 MODE_BOTH = "both"
+MODE_CUT = "cut"  # meter-free punch points
 
 
 @dataclass(frozen=True)
@@ -54,7 +55,9 @@ def make_markers(
     """Turn detected beats into named, colour-coded markers.
 
     ``downbeat_indices`` are 0-based positions into ``beat_times``.
-    Marker names: ``Beat 1..N`` for beats, ``Bar 1..N`` for downbeats.
+    Marker names: ``Beat 1..N`` for beats, ``Bar 1..N`` for downbeats,
+    ``Cut 1..N`` for cut points (``MODE_CUT`` treats ``beat_times`` as
+    the punch-point times and ignores ``downbeat_indices``).
     """
     downbeats = set(downbeat_indices)
     markers: list[Marker] = []
@@ -75,6 +78,8 @@ def make_markers(
                 markers.append(
                     Marker(float(time_seconds), f"Beat {index + 1}", BEAT_COLOR)
                 )
+        elif mode == MODE_CUT:
+            markers.append(Marker(float(time_seconds), f"Cut {index + 1}", BAR_COLOR))
         else:
             raise ValueError(f"unknown marker mode: {mode!r}")
     return markers

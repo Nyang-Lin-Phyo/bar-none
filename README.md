@@ -50,7 +50,11 @@ python src/main.py
 2. **DETECT BEATS** — shows BPM, beat count, bar count, and length.
 3. Options:
    - **Marker mode** — *Both (bars + beats)* (red bars, blue beats),
-     *All beats*, or *Downbeats only*.
+     *All beats*, *Downbeats only*, or *Cut points* (meter-free markers
+     on punchy hits — red `Cut 1…`, one per strong kick/snare).
+   - **Cut spacing** — for *Cut points*: *Tight* (0.5 s apart),
+     *Medium* (1.0 s), *Loose* (1.5 s). Changing mode or spacing makes
+     you press Detect again.
    - **Frame rate** — must match your Resolve timeline (default `24`).
    - **Clip source TC** — timecode of the audio clip's first frame
      (default `01:00:00:00`).
@@ -68,8 +72,13 @@ the default, matching the site).
 ### CLI equivalent
 
 ```bash
+# beat grid markers
 python src/main.py "examples/raph - alright (official audio).mp3" \
     --mode both --fps 24 --start-tc 01:00:00:00
+
+# meter-free cut points, 1.0 s apart (medium)
+python src/main.py "examples/raph - alright (official audio).mp3" \
+    --mode cut --density medium --fps 24
 ```
 
 ## Import markers into YOUR existing DaVinci Resolve timeline
@@ -81,7 +90,8 @@ have:
 1. In the **Media** page, **select your timeline** in the Media Pool.
 2. Right-click it → **Timelines → Import → Timeline Markers from EDL…**
 3. Pick the exported `.edl` — markers appear on that timeline at their
-   timecode positions (`Beat 1…` blue, `Bar 1…` red in *Both* mode).
+   timecode positions (`Beat 1…` blue, `Bar 1…` red in *Both* mode,
+   `Cut 1…` red in *Cut points* mode).
 
 **Before exporting**, set *Music start on timeline* to wherever the music
 actually sits on that timeline (default `01:00:00:00`), and keep *Frame rate*
@@ -92,15 +102,27 @@ Troubleshooting:
 - **No markers visible?** Make sure the timeline is selected in the Media
   Pool before importing, then zoom out — markers outside the visible range
   appear once you zoom out.
-- Marker names must be ASCII — ours are (`Beat 12`, `Bar 3`).
+- Marker names must be ASCII — ours are (`Beat 12`, `Bar 3`, `Cut 7`).
 - **Markers off by a constant amount?** The *Music start on timeline* value
   doesn't match where the music sits — fix it and re-import.
 
 ## How it works
 
-- **Beats** — `librosa.beat.beat_track` (tempo + beat times in seconds).
-- **Downbeats** — onset strength sampled at each beat; the (bar length ∈
-  3/4/6, phase) combination with the strongest consistent peaks wins.
+- **Beats** — `librosa.beat.beat_track` (tempo + beat times), then:
+  leading beats over a silent intro are dropped (first marker lands on the
+  first audible hit) and each beat is snapped onto the strongest *punch*
+  transient (40–2500 Hz) within 0.3 s — never past the midpoint to the
+  next beat, never onto a hat tick, never onto silence.
+- **Downbeats** — scored on the *kick band* (40–150 Hz), where the heavy
+  hits live: the (bar length ∈ 3/4/6, phase) combination with the strongest
+  kick energy wins, averaged across track sections so one loud passage
+  can't decide the meter alone, with the first hit after silence as a
+  phase prior and a near-tie fallback to 4/4.
+- **Cut points** — no tempo, no meter: every marker is placed
+  independently on a peak of the punch band (kick/snare body, not hat
+  ticks), standing out above its local 4 s baseline, on audible material
+  (silence earns no markers), at least *Cut spacing* apart — strongest
+  hits win the spacing contests.
 - **Timecode** — `frames = round(seconds × fps)`; non-drop `HH:MM:SS:FF`
   counted at the nominal rate (23.976 → 24, 29.97 → 30).
 - **EDL** — CMX3600-style, Resolve flavour: CRLF line endings, event line

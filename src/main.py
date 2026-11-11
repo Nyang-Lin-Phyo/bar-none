@@ -19,8 +19,22 @@ SRC_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SRC_DIR)
 sys.path.insert(0, SRC_DIR)
 
-from beats import BeatAnalysis, detect_beats
-from edl import MODE_ALL, MODE_BOTH, MODE_DOWNBEATS, build_edl, make_markers
+from beats import (
+    CUT_DENSITY_GAPS,
+    DEFAULT_CUT_DENSITY,
+    BeatAnalysis,
+    CutAnalysis,
+    detect_beats,
+    detect_cut_points,
+)
+from edl import (
+    MODE_ALL,
+    MODE_BOTH,
+    MODE_CUT,
+    MODE_DOWNBEATS,
+    build_edl,
+    make_markers,
+)
 from timecode import (
     DEFAULT_CLIP_SOURCE_TC,
     DEFAULT_FRAME_RATE_LABEL,
@@ -46,6 +60,7 @@ MODE_CHOICES = {
     "Both (bars + beats)": MODE_BOTH,
     "All beats": MODE_ALL,
     "Downbeats only": MODE_DOWNBEATS,
+    "Cut points": MODE_CUT,
 }
 
 AUDIO_FILETYPES = [
@@ -92,8 +107,10 @@ class BeatMatcherApp:
         theme.apply(root, self.style, self.palette, self.serif, self.mono)
 
         self.audio_path: str | None = None
-        self.analysis: BeatAnalysis | None = None
+        self.analysis: "BeatAnalysis | CutAnalysis | None" = None
         self._detecting = False
+        self._detect_mode: str = MODE_BOTH
+        self._detect_gap: float = CUT_DENSITY_GAPS[DEFAULT_CUT_DENSITY]
         self._messages: "queue.Queue[object]" = queue.Queue()
 
         # All state lives in StringVars so a theme rebuild keeps it intact.
@@ -106,11 +123,18 @@ class BeatMatcherApp:
         self.bars_var = tk.StringVar(value="—")
         self.length_var = tk.StringVar(value="—")
         self.mode_var = tk.StringVar(value=next(iter(MODE_CHOICES)))
+        self.density_var = tk.StringVar(
+            value=DEFAULT_CUT_DENSITY.capitalize()
+        )
         self.rate_var = tk.StringVar(value=DEFAULT_FRAME_RATE_LABEL)
         self.source_tc_var = tk.StringVar(value=DEFAULT_CLIP_SOURCE_TC)
         self.timeline_tc_var = tk.StringVar(value=DEFAULT_TIMELINE_START_TC)
         self.title_var = tk.StringVar(value="")
         self.output_var = tk.StringVar(value="")
+
+        # Changing marker mode or cut spacing invalidates a prior scan.
+        self.mode_var.trace_add("write", self._on_options_change)
+        self.density_var.trace_add("write", self._on_options_change)
 
         self._build_ui()
 
@@ -182,19 +206,23 @@ class BeatMatcherApp:
             ("BARS", self.bars_var),
             ("LENGTH", self.length_var),
         )
+        self._readout_labels: dict[str, "tk.Label"] = {}
         for column, (label, variable) in enumerate(readouts):
             card.columnconfigure(column, weight=1)
             cell = tk.Frame(card, bg=p["bg2"])
             cell.grid(
                 row=0, column=column, sticky="nsew", padx=(18, 18), pady=(13, 13)
             )
-            tk.Label(
+            heading = tk.Label(
                 cell, text=label, bg=p["bg2"], fg=p["muted"], font=(mono, 8)
-            ).pack(anchor="w")
+            )
+            heading.pack(anchor="w")
+            self._readout_labels[label] = heading
             tk.Label(
                 cell, textvariable=variable, bg=p["bg2"], fg=p["purple"],
                 font=(serif, 28),
             ).pack(anchor="w")
+        self._sync_mode_widgets()
 
         # ── 03 — MARKERS ──────────────────────────────────────────────
         self._section("03 — MARKERS")
@@ -231,16 +259,28 @@ class BeatMatcherApp:
             options, textvariable=self.source_tc_var, width=16
         ).grid(row=1, column=3, sticky="w", pady=5)
 
+        self._field(options, 2, 0, "CUT SPACING")
+        ttk.Combobox(
+            options,
+            textvariable=self.density_var,
+            values=["Tight", "Medium", "Loose"],
+            state="readonly",
+            width=10,
+        ).grid(row=2, column=1, sticky="w", padx=(0, 18), pady=5)
+
         tk.Label(
             options,
             text=(
+                "Cut points: meter-free markers on punchy hits — Tight 0.5 s "
+                "apart, Medium 1.0 s, Loose 1.5 s (press Detect after "
+                "changing).\n"
                 "Both mode: bars are red markers, beats are blue markers.\n"
                 "“Music start on timeline” = where the music sits on the "
                 "timeline you'll import markers onto."
             ),
             bg=p["bg"], fg=p["muted"], font=(mono, 8), justify="left",
             wraplength=620,
-        ).grid(row=2, column=0, columnspan=4, sticky="w", pady=(8, 0))
+        ).grid(row=3, column=0, columnspan=4, sticky="w", pady=(8, 0))
 
         # ── 04 — EXPORT ───────────────────────────────────────────────
         self._section("04 — EXPORT")
@@ -359,12 +399,38 @@ class BeatMatcherApp:
         if path:
             self.output_var.set(path)
 
+    def _sync_mode_widgets(self) -> None:
+        """Reflect the selected marker mode in labels and the detect button."""
+        labels = getattr(self, "_readout_labels", None)
+        if not labels or not hasattr(self, "detect_btn"):
+            return
+        cut = MODE_CHOICES[self.mode_var.get()] == MODE_CUT
+        labels["BARS"].config(text="CUTS" if cut else "BARS")
+        self.detect_btn.config(
+            text="DETECT CUT POINTS" if cut else "DETECT BEATS"
+        )
+
+    def _on_options_change(self, *_args: object) -> None:
+        """Marker mode or cut spacing changed — a prior scan is stale."""
+        self._sync_mode_widgets()
+        if self.analysis is None or not hasattr(self, "export_btn"):
+            return
+        self.analysis = None
+        self.export_btn.state(["disabled"])
+        self.bpm_var.set("—")
+        self.beats_var.set("—")
+        self.bars_var.set("—")
+        self.length_var.set("—")
+        self.status_var.set("Options changed — press Detect again.")
+
     def _start_detection(self) -> None:
         if not self.audio_path:
             messagebox.showwarning("No file", "Choose a music file first.")
             return
         self._detecting = True
         self.analysis = None
+        self._detect_mode = MODE_CHOICES[self.mode_var.get()]
+        self._detect_gap = CUT_DENSITY_GAPS[self.density_var.get().lower()]
         self.detect_btn.state(["disabled"])
         self.export_btn.state(["disabled"])
         self.root.config(cursor="watch")
@@ -375,7 +441,16 @@ class BeatMatcherApp:
     def _detect_worker(self) -> None:
         assert self.audio_path is not None
         try:
-            analysis = detect_beats(self.audio_path, progress=self._messages.put)
+            if self._detect_mode == MODE_CUT:
+                analysis = detect_cut_points(
+                    self.audio_path,
+                    min_gap=self._detect_gap,
+                    progress=self._messages.put,
+                )
+            else:
+                analysis = detect_beats(
+                    self.audio_path, progress=self._messages.put
+                )
         except Exception as exc:  # noqa: BLE001 - surfaced in a dialog
             self._messages.put(("error", exc))
         else:
@@ -400,20 +475,30 @@ class BeatMatcherApp:
         else:
             self.status_var.set(str(message))
 
-    def _finish_detection(self, analysis: BeatAnalysis) -> None:
+    def _finish_detection(self, analysis: "BeatAnalysis | CutAnalysis") -> None:
         self._detecting = False
         self.analysis = analysis
         self.detect_btn.state(["!disabled"])
         self.export_btn.state(["!disabled"])
         self.root.config(cursor="")
-        self.bpm_var.set(f"{analysis.tempo:.1f}")
-        self.beats_var.set(str(analysis.beat_count))
-        self.bars_var.set(str(analysis.bar_count))
-        self.length_var.set(format_duration(analysis.duration))
-        self.status_var.set(
-            f"{analysis.beat_count} beats / {analysis.bar_count} bars at "
-            f"{analysis.tempo:.1f} BPM — pick options, then Export EDL."
-        )
+        if isinstance(analysis, CutAnalysis):
+            self.bpm_var.set("—")
+            self.beats_var.set("—")
+            self.bars_var.set(str(analysis.cut_count))
+            self.length_var.set(format_duration(analysis.duration))
+            self.status_var.set(
+                f"{analysis.cut_count} cut points at ≥{analysis.min_gap:g}s "
+                "spacing — pick options, then Export EDL."
+            )
+        else:
+            self.bpm_var.set(f"{analysis.tempo:.1f}")
+            self.beats_var.set(str(analysis.beat_count))
+            self.bars_var.set(str(analysis.bar_count))
+            self.length_var.set(format_duration(analysis.duration))
+            self.status_var.set(
+                f"{analysis.beat_count} beats / {analysis.bar_count} bars at "
+                f"{analysis.tempo:.1f} BPM — pick options, then Export EDL."
+            )
 
     def _fail_detection(self, exc: BaseException) -> None:
         self._detecting = False
@@ -438,9 +523,34 @@ class BeatMatcherApp:
             return
 
         mode = MODE_CHOICES[self.mode_var.get()]
-        markers = make_markers(
-            self.analysis.beat_times, self.analysis.downbeat_indices, mode
-        )
+        if mode == MODE_CUT:
+            if not isinstance(self.analysis, CutAnalysis):
+                messagebox.showwarning(
+                    "Detect again",
+                    "Cut markers need a cut-point scan — press "
+                    "“Detect cut points” first.",
+                )
+                return
+            gap = CUT_DENSITY_GAPS[self.density_var.get().lower()]
+            if abs(self.analysis.min_gap - gap) > 1e-9:
+                messagebox.showwarning(
+                    "Detect again",
+                    "Cut spacing changed since the last scan — press "
+                    "“Detect cut points” again.",
+                )
+                return
+            markers = make_markers(self.analysis.cut_times, (), MODE_CUT)
+        else:
+            if isinstance(self.analysis, CutAnalysis):
+                messagebox.showwarning(
+                    "Detect again",
+                    "Beat markers need beat detection — press "
+                    "“Detect beats” again.",
+                )
+                return
+            markers = make_markers(
+                self.analysis.beat_times, self.analysis.downbeat_indices, mode
+            )
         if not markers:
             messagebox.showwarning(
                 "No markers",
@@ -521,15 +631,27 @@ def run_cli(argv: list[str]) -> int:
         prog="beatMatcher",
         description=(
             "Detect beats in a music file and export a DaVinci Resolve EDL "
-            "with a marker per beat."
+            "with markers — every beat, bar starts, or meter-free cut points."
         ),
     )
     parser.add_argument("file", help="music file (mp3 / wav / flac / …)")
     parser.add_argument(
         "--mode",
-        choices=[MODE_ALL, MODE_DOWNBEATS, MODE_BOTH],
+        choices=[MODE_ALL, MODE_DOWNBEATS, MODE_BOTH, MODE_CUT],
         default=MODE_BOTH,
-        help="which beats become markers (default: both)",
+        help=(
+            "which beats become markers: both/all/downbeats follow the beat "
+            "grid, cut = meter-free punch points (default: both)"
+        ),
+    )
+    parser.add_argument(
+        "--density",
+        choices=sorted(CUT_DENSITY_GAPS),
+        default=DEFAULT_CUT_DENSITY,
+        help=(
+            "minimum spacing between cut points for --mode cut "
+            "(default: %(default)s)"
+        ),
     )
     parser.add_argument(
         "--fps",
@@ -557,13 +679,21 @@ def run_cli(argv: list[str]) -> int:
         print(f"  {message}", flush=True)
 
     try:
-        analysis = detect_beats(args.file, progress=report)
-        rate = get_frame_rate(args.fps)
-        markers = make_markers(
-            analysis.beat_times, analysis.downbeat_indices, args.mode
-        )
+        if args.mode == MODE_CUT:
+            analysis = detect_cut_points(
+                args.file,
+                min_gap=CUT_DENSITY_GAPS[args.density],
+                progress=report,
+            )
+            markers = make_markers(analysis.cut_times, (), MODE_CUT)
+        else:
+            analysis = detect_beats(args.file, progress=report)
+            markers = make_markers(
+                analysis.beat_times, analysis.downbeat_indices, args.mode
+            )
         if not markers:
             raise RuntimeError(f"no markers for mode {args.mode!r}")
+        rate = get_frame_rate(args.fps)
         title = args.title or os.path.splitext(os.path.basename(args.file))[0]
         text = build_edl(
             title,
@@ -580,10 +710,16 @@ def run_cli(argv: list[str]) -> int:
         print(f"error: {format_error(exc)}", file=sys.stderr)
         return 1
 
-    print(
-        f"{analysis.tempo:.1f} BPM · {analysis.beat_count} beats · "
-        f"{analysis.bar_count} bars · {format_duration(analysis.duration)}"
-    )
+    if args.mode == MODE_CUT:
+        print(
+            f"{analysis.cut_count} cut points · ≥{analysis.min_gap:g}s apart · "
+            f"{format_duration(analysis.duration)}"
+        )
+    else:
+        print(
+            f"{analysis.tempo:.1f} BPM · {analysis.beat_count} beats · "
+            f"{analysis.bar_count} bars · {format_duration(analysis.duration)}"
+        )
     print(f"{len(markers)} markers → {out}")
     return 0
 
