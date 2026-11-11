@@ -1,4 +1,4 @@
-# beatMatcher
+# Bar None
 
 Drop in a music file, get an EDL out. The EDL contains one 1-frame event per
 beat, each carrying a Resolve marker — import it with Resolve's
@@ -6,9 +6,22 @@ beat, each carrying a Resolve marker — import it with Resolve's
 timeline** gets markers exactly where the beats are, so you can snap clip
 start/end points to them. No new timeline is created.
 
-## Setup
+## Get the app (Windows)
 
-### Windows (target platform)
+Download `BarNone-1.0.0-win.zip` from the GitHub release, then:
+
+1. **Unzip** it anywhere (Desktop, a USB stick — no installer, no admin).
+2. Double-click **`BarNone.exe`**.
+3. First run? Windows SmartScreen may say *"Windows protected your PC"* —
+   the exe is unsigned, so this is expected. Click **More info →
+   Run anyway**. (`BarNone-cli.exe` is the same app for the terminal.)
+
+The whole folder is the app: delete the folder and it's gone — nothing
+left in the registry, no traces.
+
+## Setup (run from source)
+
+### Windows
 
 ```bat
 python -m venv .venv
@@ -63,7 +76,8 @@ python src/main.py
      relative to this — this is the setting that makes them land on your
      beats.
    - **Timeline title** / **Output file** — defaults to the track name,
-     saved under `edlFiles/`.
+     from source it saves under `edlFiles/`, from the Windows app under
+     your Documents folder.
 4. **EXPORT EDL**.
 
 The **LIGHT / DARK** tag, top-right, flips between the two themes (dark is
@@ -141,23 +155,77 @@ display type (Cormorant Garamond → Georgia fallback) over mono body text
 ## Tests
 
 ```bash
-python tests/test_edl_format.py
+python -m unittest discover tests
 ```
 
-14 tests, including a byte-for-byte regeneration of the reference
-`edlFiles/Timeline 1.edl`.
+19 tests: EDL byte-format (including a byte-for-byte regeneration of the
+reference `edlFiles/Timeline 1.edl` — that file is gitignored, so restore
+it from a previous run or export one before running) and cut-point
+detection (spacing, silence, marker naming).
+
+## Build the Windows app
+
+PyInstaller only builds for the OS it runs on, so this needs a Windows
+machine (or VM). From the repo root:
+
+```bat
+packaging\build.bat
+```
+
+That creates `.venv`, installs `requirements.txt` + `requirements-dev.txt`,
+and runs PyInstaller with `packaging\barnone.spec`. Output:
+
+```
+dist\BarNone\
+  BarNone.exe        # GUI, no console window
+  BarNone-cli.exe    # console build of the same app
+  _internal\         # runtime (librosa, numba, assets, …)
+```
+
+Zip the whole `dist\BarNone` folder and that's the release artifact.
+The exes carry version info (Bar None / generic cat / 1.0.0) and the
+app icon; the built folder is ~290 MB — librosa + numba are heavy.
+
+```powershell
+# from the repo root, after the build
+Compress-Archive -Path dist\BarNone -DestinationPath BarNone-1.0.0-win.zip
+Get-FileHash -Algorithm SHA256 BarNone-1.0.0-win.zip   # paste into the release notes
+```
+
+Upload the zip to the GitHub release and list its SHA256 so downloads can
+be verified. (`build/`, `dist/`, `.venv/` and `BarNone-*.zip` are
+gitignored; `assets/` is committed — the icon is needed by both the build
+and source runs, and `packaging/make_icon.py` regenerates it from the
+artwork.)
+
+To regenerate the icon from the artwork after edits (stdlib only, no
+Pillow needed):
+
+```bash
+python packaging/make_icon.py
+```
 
 ## Layout
 
 ```
 src/
-  main.py       # Tkinter GUI + CLI entry point
+  main.py       # Tkinter GUI + CLI entry point (frozen-exe aware)
   theme.py      # site palette (dark/light) + ttk styling + font fallbacks
-  beats.py      # librosa beat/downbeat detection
+  beats.py      # librosa beat/downbeat/cut-point detection
   timecode.py   # seconds ⇄ SMPTE timecode
   edl.py        # marker model + EDL writer
 tests/
-  test_edl_format.py
-edlFiles/       # exports land here
-examples/       # sample tracks
+  test_edl_format.py   # EDL byte format + timecode
+  test_cut_points.py   # cut-point detection
+packaging/
+  barnone.spec        # PyInstaller spec (GUI + CLI exe)
+  build.bat           # one-command Windows build
+  make_icon.py        # artwork → icon.ico / icon.png (stdlib only)
+  version_info*.py    # exe version resources
+assets/
+  B N.png       # source artwork
+  icon.ico      # generated (multi-size, transparent)
+  icon.png      # generated (256 px window icon)
+edlFiles/       # exports land here (source runs)
+examples/       # sample tracks (gitignored)
 ```

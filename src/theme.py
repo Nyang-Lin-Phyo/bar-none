@@ -1,4 +1,4 @@
-"""Theme for beatMatcher — colours & type from nyang-lin-phyo.github.io.
+"""Theme for Bar None — colours & type from nyang-lin-phyo.github.io.
 
 The site's dark palette is the default; ``LIGHT`` mirrors its
 ``[data-theme='light']`` tokens.  Tk cannot render alpha, so the site's

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""beatMatcher — turn the beats of a music file into a DaVinci Resolve EDL.
+"""Bar None — turn the beats of a music file into a DaVinci Resolve EDL.
 
 Usage:
     python src/main.py                     # GUI (needs tkinter)
@@ -16,8 +16,39 @@ import sys
 import threading
 
 SRC_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.dirname(SRC_DIR)
+FROZEN = bool(getattr(sys, "frozen", False))  # True inside a PyInstaller build
+if FROZEN:
+    # The exe's folder is the app root; user-facing defaults go to profile
+    # folders (a Program Files install must never be written to).
+    PROJECT_ROOT = os.path.dirname(sys.executable)
+else:
+    PROJECT_ROOT = os.path.dirname(SRC_DIR)
 sys.path.insert(0, SRC_DIR)
+
+HOME = os.path.expanduser("~")
+
+
+def _first_existing(*candidates: str) -> str:
+    for candidate in candidates:
+        if os.path.isdir(candidate):
+            return candidate
+    return candidates[-1]
+
+
+if FROZEN:
+    DEFAULT_AUDIO_DIR = _first_existing(
+        os.path.join(HOME, "Music"), os.path.join(HOME, "Documents"), HOME
+    )
+    DEFAULT_OUTPUT_DIR = _first_existing(os.path.join(HOME, "Documents"), HOME)
+else:
+    DEFAULT_AUDIO_DIR = os.path.join(PROJECT_ROOT, "examples")
+    DEFAULT_OUTPUT_DIR = os.path.join(PROJECT_ROOT, "edlFiles")
+
+
+def resource_path(relative: str) -> str:
+    """Path to a bundled asset — works from source and from a frozen exe."""
+    base = getattr(sys, "_MEIPASS", PROJECT_ROOT)
+    return os.path.join(base, relative)
 
 from beats import (
     CUT_DENSITY_GAPS,
@@ -90,13 +121,29 @@ def format_error(exc: BaseException) -> str:
     return text
 
 
+def apply_window_icon(root: "tk.Tk") -> None:
+    """Show the app icon in the titlebar and taskbar (best effort)."""
+    ico = resource_path(os.path.join("assets", "icon.ico"))
+    png = resource_path(os.path.join("assets", "icon.png"))
+    try:
+        if sys.platform == "win32" and os.path.exists(ico):
+            root.iconbitmap(ico)
+        elif os.path.exists(png):
+            image = tk.PhotoImage(file=png)
+            root.iconphoto(True, image)
+            root._app_icon = image  # Tk drops images without a reference
+    except tk.TclError:
+        pass
+
+
 class BeatMatcherApp:
     POLL_MS = 100
 
     def __init__(self, root: "tk.Tk") -> None:
         self.root = root
-        root.title("beatMatcher")
+        root.title("Bar None")
         root.minsize(700, 480)
+        apply_window_icon(root)
 
         # theme state — toggled by the tag button, top-right
         self.theme_name = "dark"
@@ -152,7 +199,7 @@ class BeatMatcherApp:
         wordmark = tk.Frame(header, bg=p["bg"])
         wordmark.pack(side="left")
         tk.Label(
-            wordmark, text="beatMatcher", bg=p["bg"], fg=p["purple"],
+            wordmark, text="Bar None", bg=p["bg"], fg=p["purple"],
             font=(serif, 26),
         ).pack(anchor="w")
         tk.Label(
@@ -358,7 +405,7 @@ class BeatMatcherApp:
     # -------------------------------------------------------------- actions
 
     def _choose_file(self) -> None:
-        initial_dir = os.path.join(PROJECT_ROOT, "examples")
+        initial_dir = DEFAULT_AUDIO_DIR
         if not os.path.isdir(initial_dir):
             initial_dir = PROJECT_ROOT
         path = filedialog.askopenfilename(
@@ -376,7 +423,7 @@ class BeatMatcherApp:
 
         stem = os.path.splitext(os.path.basename(path))[0]
         self.title_var.set(stem)
-        self.output_var.set(os.path.join(PROJECT_ROOT, "edlFiles", stem + ".edl"))
+        self.output_var.set(os.path.join(DEFAULT_OUTPUT_DIR, stem + ".edl"))
         self.bpm_var.set("—")
         self.beats_var.set("—")
         self.bars_var.set("—")
@@ -385,9 +432,7 @@ class BeatMatcherApp:
 
     def _choose_output(self) -> None:
         current = self.output_var.get().strip()
-        initial_dir = os.path.dirname(current) if current else os.path.join(
-            PROJECT_ROOT, "edlFiles"
-        )
+        initial_dir = os.path.dirname(current) if current else DEFAULT_OUTPUT_DIR
         initial_file = os.path.basename(current) if current else "timeline.edl"
         path = filedialog.asksaveasfilename(
             title="Save EDL as",
@@ -626,9 +671,21 @@ def run_gui() -> int:
     return 0
 
 
+def _force_utf8_output() -> None:
+    """Print safely on Windows consoles/pipes (cp1252 can't encode ≥ or →)."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except (ValueError, OSError):
+                pass
+
+
 def run_cli(argv: list[str]) -> int:
+    _force_utf8_output()
     parser = argparse.ArgumentParser(
-        prog="beatMatcher",
+        prog="barnone",
         description=(
             "Detect beats in a music file and export a DaVinci Resolve EDL "
             "with markers — every beat, bar starts, or meter-free cut points."
@@ -702,7 +759,7 @@ def run_cli(argv: list[str]) -> int:
             clip_source_tc=args.source_tc,
             timeline_start_tc=args.start_tc,
         )
-        out = args.out or os.path.join(PROJECT_ROOT, "edlFiles", title + ".edl")
+        out = args.out or os.path.join(DEFAULT_OUTPUT_DIR, title + ".edl")
         os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
         with open(out, "wb") as handle:
             handle.write(text.encode("utf-8"))

@@ -29,3 +29,6 @@ dist/
 AGENTS.md
 examples/
 edlFiles/
+
+# ── Release artifacts (built on Windows, uploaded to GitHub) ──
+BarNone-*.zip
